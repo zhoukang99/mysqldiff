@@ -52,7 +52,7 @@ db_new数据库中新增了course，并添加了一个外键约束：
  ![](https://i.imgur.com/Z2uUhiv.png)  
 使用下方命令进行差异化对比：  
  ```
- python mysqldiff.py -c s=clear:123456@192.168.18.149:3306 db_new:db_old
+ python mysqldiff.py -c s=comclay:123456@192.168.18.149:3306 db_new:db_old
  ```
 生成的diff.sql如下：  
 ```sql
