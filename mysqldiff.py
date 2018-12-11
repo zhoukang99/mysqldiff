@@ -2,7 +2,7 @@
 
 # @Time    : 2018/11/23 13:59
 # @Author  : zhoukang
-# @File    : db_scan.py
+# @File    : mysqldiff.py
 """
 命令格式：python mysqldiff.py -x s=clear:123456@192.168.18.149:3306 db_new:db_old file=diff.sql
 参数说明：
@@ -17,7 +17,6 @@
     [db_new]{.[table_name]}:[db_old]{.[table_name]}   : 数据库名.表名
     file=[diff_file]   : 差异化sql保存位置
 """
-
 
 import web
 import os
@@ -40,7 +39,6 @@ def connect(host, db, user='clear', pw='123456', port=3306):
 
 
 class Parameter(object):
-
     def __init__(self):
         self.user = None
         self.pw = None
@@ -62,6 +60,119 @@ class Parameter(object):
         return str([self.user, self.pw, self.host, self.port, self.name, self.table])
 
 
+class MapParser(object):
+    """映射关系配置文件解析"""
+
+    def __init__(self):
+        self.old_table = None
+        self.old_cols = []
+        self.new_table = None
+        self.new_cols = []
+        self.line = None
+        self.map_data = False
+
+    def parse(self, line):
+        """
+        oldtable -> newtable
+        oldtable.oldcol -> newtable.newcol
+        oldtable.[oldcol1, oldcol12, oldcol3 ......] -> newtable.[newcol1, newcol2, newcol3 ......]
+        :param line:
+        :return: [sql1, sql2, ......]
+        """
+        line = line.replace(' ', '')
+        print line
+        if len(line) == 0:
+            return []
+        sign = '=>'
+        if line.find(sign) > 0:
+            self.map_data = True
+        elif line.find('->') > 0:
+            sign = '->'
+        else:
+            raise BaseException(u'格式错误：' + line)
+        old, new = line.split(sign)
+        if old.__eq__(new):
+            return []
+        self.line = line
+        parse_success = False
+        if old.find('.') < 0 and new.find('.') < 0:
+            self.old_table = old
+            self.new_table = new
+            parse_success = True
+        elif old.find('.[') > 0 and new.find('.[') > 0:
+            self.old_table, old_cols_str = old.split('.')
+            self.new_table, new_cols_str = new.split('.')
+            old_cols_str = old_cols_str.replace('[', '')
+            old_cols_str = old_cols_str.replace(']', '')
+            new_cols_str = new_cols_str.replace('[', '')
+            new_cols_str = new_cols_str.replace(']', '')
+            self.old_cols = old_cols_str.split(',')
+            self.new_cols = new_cols_str.split(',')
+            parse_success = True
+        elif old.find('.') > 0 and new.find('.') > 0:
+            self.old_table, old_col = old.split('.')
+            self.new_table, new_col = new.split('.')
+            self.old_cols.append(old_col)
+            self.new_cols.append(new_col)
+            parse_success = True
+        if parse_success and self.check():
+            return True
+        raise BaseException(u'格式错误：' + line)
+
+    def check(self):
+        if len(self.old_cols) != len(self.new_cols):
+            raise BaseException(u'列的个数不一致：' + self.line)
+        if self.map_data and self.old_table == self.new_table:
+            raise BaseException(u'数据导入时表名不能相同：' + self.line)
+        if not self.map_data and len(self.old_cols) > 0 and self.old_cols.__eq__(self.new_cols):
+            self.old_cols = []
+            self.new_cols = []
+        return True
+
+    def build_raname(self):
+        """
+        重命名
+        """
+        sqls = []
+        if len(self.new_cols) > 0:
+            for i, col in enumerate(self.old_cols):
+                sqls.append(r'ALTER TABLE `%s` CHANGE `%s` `%s`;' % (self.old_table, col, self.new_cols[i]))
+        if self.new_table != self.old_table:
+            sqls.append('ALTER TABLE `%s` RENAME TO `%s`;' % (self.old_table, self.new_table))
+        return sqls
+
+    def build_pipe(self):
+        """
+        导入数据
+        """
+        if self.old_table == self.new_table:
+            return []
+        sqls = []
+        old_keys = '*'
+        new_keys = None
+        if len(self.new_cols) > 0:
+            old_keys = ','.join(self.old_cols)
+            new_keys = q(','.join(self.new_cols))
+        res = db_old.query('SELECT %s FROM %s' % (old_keys, self.old_table))
+        if len(res) <= 0:
+            return []
+        values = []
+        for item in res:
+            if new_keys is None:
+                _keys = web.SQLQuery.join(item.keys(), ', ')
+                new_keys = (q(_keys))
+            _values = web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', ')
+            values.append(unicode(q(_values)))
+        sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n\t'.join(values) + ';')
+        return sqls
+
+    def build(self):
+        if self.map_data:
+            return self.build_pipe()
+        else:
+            return self.build_raname()
+
+
 # commands
 command_exec = '-x'
 command_copy = '-c'
@@ -76,6 +187,7 @@ is_copy_data = False
 is_close_fk = False
 diff_file_path = 'diff.sql'
 exec_log_path = 'error.log'
+map_config_path = 'map.config'
 db_new_param = Parameter()
 db_old_param = Parameter()
 args = sys.argv[1:]
@@ -93,7 +205,6 @@ if command_exec in args:
 if command_copy in args:
     is_copy_data = True
     args.remove(command_copy)
-
 
 for item in args:
     if item.find('=') > 0:
@@ -138,6 +249,83 @@ db_new = connect(db_new_param.host, db_new_param.name, port=db_new_param.port,
                  user=db_new_param.user, pw=db_new_param.pw)
 db_old = connect(db_old_param.host, db_old_param.name, port=db_old_param.port,
                  user=db_old_param.user, pw=db_old_param.pw)
+
+
+def check_map(parser):
+    if db_new_param.table is not None:
+        if parser.new_table != db_new_param.table and parser.old_table != db_old_param.table:
+            return False
+    exists_new_table = exists(db_old, parser.new_table)
+    if not parser.map_data:
+        # 重命名
+        if not exists_new_table:
+            return True
+        if len(parser.new_cols) == 0:
+            # 表已重命名过
+            return False
+        else:
+            # 判断列是否重命名
+            fields = desc(db_old, parser.new_table)
+            count = 0
+            for col in parser.new_cols:
+                if len(filter(lambda x: x['Field'] == col, fields)) > 0:
+                    count += 1
+            if count == 0:
+                return True
+            elif count == len(parser.new_cols):
+                return False
+            else:
+                raise BaseException(u'列名存在冲突：' + parser.line)
+    else:
+        # 导入数据
+        if exists_new_table:
+            return False
+        return True
+
+
+def parse_map_config(config_path):
+    """
+    map.config文件解析称对应的sql语句
+    :param config_path:
+    :return:
+    """
+    if not os.path.exists(config_path):
+        return [], []
+    rename_parsers = []
+    pipe_parsers = []
+    # rename_sqls = []
+    # pipe_sqls = []
+    map_file = open(config_path)
+    for line in map_file:
+        line = line.strip()
+        if len(line) <= 0 or line.replace(' ', '').startswith('#') or line.find('->') <= 0 and line.find('=>') <= 0:
+            continue
+        parser = MapParser()
+        parser.parse(line)
+        # 判断表格是否已经导入和创建了
+        if not check_map(parser):
+            continue
+        # sqls = parser.build()
+        # if len(sqls) == 0:
+        #     continue
+        if parser.map_data:
+            pipe_parsers.append(parser)
+            # pipe_sqls.extend(sqls)
+        else:
+            # rename_sqls.extend(sqls)
+            rename_parsers.append(parser)
+    map_file.close()
+    # return rename_sqls, pipe_sqls
+    return rename_parsers, pipe_parsers
+
+
+def build_map_sqls(parsers):
+    if parsers is None or len(parsers) == 0:
+        return []
+    sqls = []
+    for p in parsers:
+        sqls.extend(p.build())
+    return sqls
 
 
 def print_data(data):
@@ -252,10 +440,10 @@ def build_alter_table_sql(fields_new, fields_old):
         if old is None:
             add_sql.append(build_add_sql(item, old))
             continue
-        if item.__eq__(old):
-            continue
+        # if item.__eq__(old):
+        #     continue
         # 修改
-        if item['Type'] != old['Type'] or cmp(item['Default'] != 0, old['Default']) or item['Extra'] != old['Extra'] or \
+        if item['Type'] != old['Type'] or cmp(item['Default'], old['Default']) != 0 or item['Extra'] != old['Extra'] or \
                         item['Null'] != old['Null']:
             change_sql.append(build_change_sql(item, old))
     for item in fields_old:
@@ -354,7 +542,8 @@ def file_append(file, table_name, *sqls):
     """文件中追加内容"""
     if sqls is None or len(sqls) == 0:
         return
-    file.write('/' + '*' * 30 + ' ' + table_name + ' ' + '*' * 30 + '/')
+    # file.write('/' + '*' * 30 + ' ' + table_name + ' ' + '*' * 30 + '/')
+    file.write('/' + table_name.center(80, '*') + '/')
     file.write('\n')
     for item in sqls:
         print type(item)
@@ -424,18 +613,60 @@ def compare_foriegn_key(fk, other_fk):
     return True
 
 
+def filter_rename_table(table, parsers):
+    """
+    过滤重命名的表格
+    :param table:
+    :param parsers:
+    :return:
+    """
+    for p in parsers:
+        if p.new_table == table and p.new_table != p.old_table:
+            return p.old_table
+    return table
+
+
+def filter_rename_field(table, fields, parsers):
+    """
+    由于重命名sql在前面执行，所以需要根据重命名配置过滤字段
+    :param fields:
+    :param parsers:
+    :return:
+    """
+    for p in parsers:
+        if p.map_data or table != p.old_table:
+            continue
+        if len(p.new_cols) == 0:
+            return fields
+        for f in fields:
+            if f['Field'] in p.old_cols:
+                i = p.old_cols.index(f['Field'])
+                f['Field'] = p.new_cols[i]
+        break
+    return fields
+
+
 def start():
     handle_sql(db_old, u'关闭外键约束', 'SET FOREIGN_KEY_CHECKS=0;')
+    rename_parsers, pipe_parsers = parse_map_config(map_config_path)
+    # rename_sqls, pipe_sqls = parse_map_config(map_config_path)
+    rename_sqls = build_map_sqls(rename_parsers)
+    pipe_sqls = build_map_sqls(pipe_parsers)
+    print len(rename_sqls), rename_sqls, len(pipe_sqls), pipe_sqls
+    handle_sql(db_old, u'表或列重命名', *rename_sqls)
     # 外键约束
     delete_fks, add_fks = build_foriegn_key_sqls(db_new, db_new_param.name, db_old, db_old_param.name)
     # tables_new = db_new.query('show tables')
     key, tables_new = show_tables(db_new, db_new_param.name, db_new_param.table)
     # 新表
+    create_table_sqls = []
+    alter_table_sqls = []
     for item in tables_new:
         print item
         table_name = item[key]
+        old_table_name = filter_rename_table(table_name, rename_parsers)
         # 1, 表不存在，需要新建
-        if not exists(db_old, table_name):
+        if not exists(db_old, old_table_name):
             # 表不存在
             sqls = []
             sql_create_table = get_table_structure(db_new, table_name)
@@ -447,23 +678,34 @@ def start():
                 insert_sql = pipe(db_new, db_old, table_name)
                 if insert_sql is not None:
                     sqls.append(insert_sql)
-            handle_sql(db_old, table_name, *sqls)
+            # TODO 创建表
+            # handle_sql(db_old, table_name, *sqls)
+            create_table_sqls.extend(sqls)
             continue
-
         # 2, 表存在，则判断字段
-        fields_new = list(desc(db_new, table_name))
-        fields_old = list(desc(db_old, table_name))
+        fields_new = sorted(list(desc(db_new, table_name)), key=lambda x: x['Field'])
+        fields_old = sorted(list(desc(db_old, old_table_name)), key=lambda x: x['Field'])
+        # 过滤重命名设置
+        filter_rename_field(old_table_name, fields_old, rename_parsers)
         # 表结构相同
+        print table_name, fields_new.__eq__(fields_old)
         if fields_new.__eq__(fields_old):
             continue
         alter_sql = build_alter_table_sql(fields_new, fields_old)
+        print u'修改表', table_name, alter_sql
         if len(alter_sql) == 0:
             continue
         sql = ('ALTER TABLE %s \n\t' % table_name) + ', \n\t'.join(alter_sql) + ';'
         # sql = compare_fields(table_name, table_name)
-        handle_sql(db_old, table_name, sql)
+        # TODO 修改表
+        # handle_sql(db_old, table_name, sql)
+        alter_table_sqls.append(sql)
+    handle_sql(db_old, u'新增表', *create_table_sqls)
+    handle_sql(db_old, u'往新增表中导入旧表中数据', *pipe_sqls)
+    handle_sql(db_old, u'修改', *alter_table_sqls)
     handle_sql(db_old, 'delete foreign key', *delete_fks)
     handle_sql(db_old, 'add foreign key', *add_fks)
+    # handle_sql(db_old, u'往新增表中导入旧表中数据', *pipe_sqls)
     handle_sql(db_old, u'开启外键约束', 'SET FOREIGN_KEY_CHECKS=1;')
 
 
@@ -474,8 +716,8 @@ if __name__ == '__main__':
         exit()
     try:
         start()
-    except Exception, e:
-        print e
+    # except Exception, e:
+    #     print e
     finally:
         diff_file.close()
         log_file.close()

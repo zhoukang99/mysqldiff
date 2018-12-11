@@ -5,8 +5,10 @@ mysql虽然提供了mysqldiff工具，但实际使用中还有些不满足要求
 *  比对两个数据库的差异；  
 *  比对两张表的差异；  
 *  支持外键的处理；
-*  自动忽略表字段的顺序差异；  
+*  自动忽略表字段的顺序差异；
+*  支持表或列的重命名；    
 *  支持同步新增表中数据；  
+*  支持旧表中的数据导入到新增表中；  
 *  将生成的差异sql保存到文件或者自动执行；  
 *  记录错误日志，出错时方便排查。
 
@@ -44,7 +46,27 @@ mysql虽然提供了mysqldiff工具，但实际使用中还有些不满足要求
  ```
  python mysqldiff.py -x s=comclay:123456@192.168.16.122:3306 db_new:db_old file=diff.sql
  ```
-### 3\. 数据库对比 ###  
+### 3\. `map.config`映射关系配置 ###   
+map.config文件中包含重命名和数据导入的配置  
+重命名配置用`->`表示：  
+```
+# 重命名
+# oldtable -> newtable
+# oldtable.oldcol -> newtable.newcol
+# oldtable.[oldcol1, oldcol12, oldcol3 ......] -> newtable.[newcol1, newcol2, newcol3 ......]
+
+course_old -> course
+user.name -> user_new.username
+```
+数据导入配置用`=>`表示：
+```
+# 数据导入
+# oldtable => newtable
+# oldtable.[oldcol1, oldcol12, oldcol3 ......] => newtable.[newcol1, newcol2, newcol3 ......]
+
+course_old.[id, user_id] => user_course.[course_id, user_id]
+```
+### 4\. 数据库对比 ###  
 db_old数据库中只包含user表：  
  ![](https://i.imgur.com/YJfklRk.png)  
 db_new数据库中新增了course，并添加了一个外键约束：  
@@ -77,6 +99,6 @@ INSERT INTO course (grade, course, user_id, id) VALUES
 SET FOREIGN_KEY_CHECKS=1;
 
 ```
-### 4\. 联系方式 ###  
+### 5\. 联系方式 ###  
 微信：  
 ![](https://i.imgur.com/1wmotfT.jpg)
