@@ -167,11 +167,7 @@ class MapParser(object):
             # _values = web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', ')
             _values = (', '.join([safestr(v) for v in item.values()]))
             values.append(q(_values))
-        #     if i % 10 == 0:
-        #         sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n\t'.join(values) + ';')
-        #         values = []
-        # if len(values):
-        sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n\t'.join(values) + ';')
+        sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n'.join(values) + ';')
         return sqls
 
     def build(self):
@@ -416,13 +412,19 @@ def safestr(obj, encoding='utf-8'):
     elif isinstance(obj, long):
         return str(obj)
     elif isinstance(obj, unicode):
-        return repr(obj.encode(encoding))
+        return my_repr_str(str(obj))
     elif isinstance(obj, str):
-        return repr(str)
+        return my_repr_str(obj)
     elif isinstance(obj, datetime.datetime):
         return "'" + str(obj) + "'"
     else:
         return repr(str(obj))
+
+
+def my_repr_str(obj):
+    if isinstance(obj, str):
+        obj = obj.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+    return "'%s'" % obj
 
 
 def pipe(db_new, db_old, table):
@@ -469,10 +471,7 @@ def delete_table(db, table):
 def build_default_sql(default_new, default_old):
     if default_new is None:
         return ''
-    if isinstance(default_new, str):
-        return "DEFAULT '%s'" % default_new
-    else:
-        return "DEFAULT %s" % default_new
+    return "DEFAULT %s" % safestr(default_new)
 
 
 def build_null_sql(null_new, null_old):
@@ -485,13 +484,15 @@ def build_null_sql(null_new, null_old):
 def build_base_field(new, old):
     # print_data(new)
     return ('`%s` %s %s %s %s' % (
-        new['Field'], new['Type'], build_default_sql(new['Default'], None if old is None else old['Default']),
-        build_null_sql(new['Null'], None if old is None else old['Null']), new['Extra']))
+        new['Field'], new['Type'],
+        build_null_sql(new['Null'], None if old is None else old['Null']),
+        build_default_sql(new['Default'], None if old is None else old['Default']),
+        new['Extra']))
 
 
 def build_change_sql(new, old):
     """VARCHAR(125) CHARSET utf8 COLLATE utf8_unicode_ci DEFAULT '' NOT NULL COMMENT '姓名',"""
-    return 'CHANGE ' + build_base_field(new, old)
+    return 'MODIFY ' + build_base_field(new, old)
 
 
 def build_add_sql(new, old):
@@ -517,6 +518,8 @@ def build_alter_table_sql(fields_new, fields_old):
         # 修改
         if item['Type'] != old['Type'] or cmp(item['Default'], old['Default']) != 0 or item['Extra'] != old['Extra'] or \
                         item['Null'] != old['Null']:
+            print item
+            print old
             change_sql.append(build_change_sql(item, old))
     for item in fields_old:
         if get_field(fields_new, item['Field']) is None:
@@ -619,7 +622,7 @@ def file_append(file, table_name, *sqls):
     file.write('\n')
     for s in sqls:
         # print s
-        file.write(unicode(s, 'utf8'))
+        file.write(s)
         file.write('\n')
         file.write('\n')
 
@@ -634,7 +637,7 @@ def show_error_log(db):
 def ex(db, *sqls):
     for sql in sqls:
         try:
-            db.query(sql)
+            db.query(web.SQLQuery.join(sql, ''), processed=True)
         except Exception as exception:
             print sql
             traceback.print_exc()
