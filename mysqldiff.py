@@ -160,14 +160,20 @@ class MapParser(object):
         if len(res) <= 0:
             return []
         values = []
-        for i, item in enumerate(res):
+        packet_size = 0
+        for i, _item in enumerate(res):
             if new_keys is None:
-                _keys = web.SQLQuery.join(item.keys(), '`, `')
+                _keys = web.SQLQuery.join(_item.keys(), '`, `')
                 new_keys = (q('`' + _keys + '`'))
             # _values = web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', ')
-            _values = (', '.join([safestr(v) for v in item.values()]))
+            _values = (', '.join([safestr(v) for v in _item.values()]))
             values.append(q(_values))
-        sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n'.join(values) + ';')
+            packet_size += sys.getsizeof(_values)
+            if packet_size >= max_allowed_packet / 2:
+                sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n' + ', \n'.join(values) + ';')
+                values = []
+        if len(values) > 0:
+            sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n' + ', \n'.join(values) + ';')
         return sqls
 
     def build(self):
@@ -189,6 +195,7 @@ command_diff_file = 'file'
 is_exec_sql = False
 is_copy_data = False
 is_close_fk = False
+max_allowed_packet = 1048576
 diff_file_path = 'diff.sql'
 exec_log_path = 'error.log'
 map_config_path = 'map.config'
@@ -359,6 +366,13 @@ def desc(db, table):
     return db.query('desc %s' % table)
 
 
+def get_max_allow_packet(db):
+    res = db.query("show VARIABLES like 'max_allowed_packet'")
+    for x in res:
+        return int(x['Value'])
+    return max_allowed_packet
+
+
 def q(x): return "(" + x + ")"
 
 
@@ -431,24 +445,26 @@ def pipe(db_new, db_old, table):
     """新表中默认数据的insert语句"""
     res = db_new.query('select * from %s' % table)
     if len(res) <= 0:
-        return
+        return []
     values = ''
     keys = None
-    for i, item in enumerate(res):
+    _sqls = []
+    for i, _item in enumerate(res):
         # TODO 导入默认数据
         if keys is None:
-            _keys = '`, `'.join(item.keys())
+            _keys = '`, `'.join(_item.keys())
             keys = str(q('`' + _keys + '`'))
         # _values = str(web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', '))
-        _values = (', '.join([safestr(v) for v in item.values()]))
-        # handle_sql(db_old, '', q(_values))
-        # print type(_values), _values
-        # values.append(q(_values))
-        if i != 0:
+        _values = (', '.join([safestr(v) for v in _item.values()]))
+        if len(values) != 0:
             values += ', \n'
         values += q(_values)
-    # return "INSERT INTO %s " % table + keys + ' VALUES \n' + ', \n'.join(values) + ';'
-    return "INSERT INTO %s " % str(table) + keys + ' VALUES \n' + values + ';'
+        if sys.getsizeof(values) >= max_allowed_packet / 2:
+            _sqls.append("INSERT INTO %s " % str(table) + keys + ' VALUES \n' + values + ';')
+            values = ''
+    if len(values) > 0:
+        _sqls.append("INSERT INTO %s " % str(table) + keys + ' VALUES \n' + values + ';')
+    return _sqls
 
 
 def get_field(fields, field_name):
@@ -617,11 +633,9 @@ def file_append(file, table_name, *sqls):
     """文件中追加内容"""
     if sqls is None or len(sqls) == 0:
         return
-    # file.write('/' + '*' * 30 + ' ' + table_name + ' ' + '*' * 30 + '/')
     file.write('/' + table_name.center(80, '*') + '/')
     file.write('\n')
     for s in sqls:
-        # print s
         file.write(s)
         file.write('\n')
         file.write('\n')
@@ -750,8 +764,8 @@ def start():
             # 开始导入默认的数据
             if is_copy_data:
                 insert_sql = pipe(db_new, db_old, table_name)
-                if insert_sql is not None:
-                    sql_create_tables.append(insert_sql)
+                if len(insert_sql) > 0:
+                    sql_create_tables.extend(insert_sql)
             continue
         # 2, 表存在，则判断字段
         fields_new = sorted(list(desc(db_new, table_name)), key=lambda x: x['Field'])
@@ -778,6 +792,7 @@ def start():
 
 
 if __name__ == '__main__':
+    max_allowed_packet = get_max_allow_packet(db_old)
     if db_new_param.table is not None:
         sql = compare_table_structure(db_new_param.table, db_old_param.table)
         if not sql:
