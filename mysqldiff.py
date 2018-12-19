@@ -17,10 +17,11 @@
     [db_new]{.[table_name]}:[db_old]{.[table_name]}   : 数据库名.表名
     file=[diff_file]   : 差异化sql保存位置
 """
-
+import datetime
 import web
 import os
 import sys
+import traceback
 
 reload(sys)
 sys.setdefaultencoding("utf-8")
@@ -144,6 +145,8 @@ class MapParser(object):
     def build_pipe(self):
         """
         导入数据
+        _values = unicode(', '.join([safestr(v) for v in item.values()]))
+        values.append(q(_values))
         """
         if self.old_table == self.new_table:
             return []
@@ -152,17 +155,22 @@ class MapParser(object):
         new_keys = None
         if len(self.new_cols) > 0:
             old_keys = ','.join(self.old_cols)
-            new_keys = q(','.join(self.new_cols))
+            new_keys = q('`' + '`,`'.join(self.new_cols) + '`')
         res = db_old.query('SELECT %s FROM %s' % (old_keys, self.old_table))
         if len(res) <= 0:
             return []
         values = []
-        for item in res:
+        for i, item in enumerate(res):
             if new_keys is None:
-                _keys = web.SQLQuery.join(item.keys(), ', ')
-                new_keys = (q(_keys))
-            _values = web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', ')
-            values.append(unicode(q(_values)))
+                _keys = web.SQLQuery.join(item.keys(), '`, `')
+                new_keys = (q('`' + _keys + '`'))
+            # _values = web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', ')
+            _values = (', '.join([safestr(v) for v in item.values()]))
+            values.append(q(_values))
+        #     if i % 10 == 0:
+        #         sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n\t'.join(values) + ';')
+        #         values = []
+        # if len(values):
         sqls.append("INSERT INTO %s " % self.new_table + new_keys + ' VALUES \n\t' + ', \n\t'.join(values) + ';')
         return sqls
 
@@ -358,21 +366,87 @@ def desc(db, table):
 def q(x): return "(" + x + ")"
 
 
+def sqlify(obj):
+    """
+    converts `obj` to its proper SQL version
+
+        >>> sqlify(None)
+        'NULL'
+        >>> sqlify(True)
+        "'t'"
+        >>> sqlify(3)
+        '3'
+    """
+    # because `1 == True and hash(1) == hash(True)`
+    # we have to do this the hard way...
+
+    if obj is None:
+        return 'NULL'
+    elif obj is True:
+        return "'t'"
+    elif obj is False:
+        return "'f'"
+    elif isinstance(obj, long):
+        return str(obj)
+    elif datetime and isinstance(obj, datetime.datetime):
+        return repr(obj.isoformat())
+    else:
+        if isinstance(obj, unicode): obj = obj.encode('utf8')
+        return repr(obj)
+
+
+def safestr(obj, encoding='utf-8'):
+    r"""
+    Converts any given object to utf-8 encoded string.
+
+        >>> safestr('hello')
+        'hello'
+        >>> safestr(u'\u1234')
+        '\xe1\x88\xb4'
+        >>> safestr(2)
+        '2'
+    """
+    # print type(obj), obj
+    if obj is None:
+        return 'NULL'
+    elif obj is True:
+        return "'t'"
+    elif obj is False:
+        return "'f'"
+    elif isinstance(obj, long):
+        return str(obj)
+    elif isinstance(obj, unicode):
+        return repr(obj.encode(encoding))
+    elif isinstance(obj, str):
+        return repr(str)
+    elif isinstance(obj, datetime.datetime):
+        return "'" + str(obj) + "'"
+    else:
+        return repr(str(obj))
+
+
 def pipe(db_new, db_old, table):
     """新表中默认数据的insert语句"""
     res = db_new.query('select * from %s' % table)
     if len(res) <= 0:
         return
-    values = []
+    values = ''
     keys = None
-    for item in res:
+    for i, item in enumerate(res):
         # TODO 导入默认数据
-        _keys = web.SQLQuery.join(item.keys(), ', ')
-        _values = web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', ')
         if keys is None:
-            keys = (q(_keys))
-        values.append(unicode(q(_values)))
-    return "INSERT INTO %s " % table + keys + ' VALUES \n\t' + ', \n\t'.join(values) + ';'
+            _keys = '`, `'.join(item.keys())
+            keys = str(q('`' + _keys + '`'))
+        # _values = str(web.SQLQuery.join([web.sqlparam(v) for v in item.values()], ', '))
+        _values = (', '.join([safestr(v) for v in item.values()]))
+        # handle_sql(db_old, '', q(_values))
+        # print type(_values), _values
+        # values.append(q(_values))
+        if i != 0:
+            values += ', \n'
+        values += q(_values)
+    # return "INSERT INTO %s " % table + keys + ' VALUES \n' + ', \n'.join(values) + ';'
+    return "INSERT INTO %s " % str(table) + keys + ' VALUES \n' + values + ';'
 
 
 def get_field(fields, field_name):
@@ -440,8 +514,6 @@ def build_alter_table_sql(fields_new, fields_old):
         if old is None:
             add_sql.append(build_add_sql(item, old))
             continue
-        # if item.__eq__(old):
-        #     continue
         # 修改
         if item['Type'] != old['Type'] or cmp(item['Default'], old['Default']) != 0 or item['Extra'] != old['Extra'] or \
                         item['Null'] != old['Null']:
@@ -545,10 +617,9 @@ def file_append(file, table_name, *sqls):
     # file.write('/' + '*' * 30 + ' ' + table_name + ' ' + '*' * 30 + '/')
     file.write('/' + table_name.center(80, '*') + '/')
     file.write('\n')
-    for item in sqls:
-        print type(item)
-        print_data(item)
-        file.write(unicode(item))
+    for s in sqls:
+        # print s
+        file.write(unicode(s, 'utf8'))
         file.write('\n')
         file.write('\n')
 
@@ -557,14 +628,16 @@ def show_error_log(db):
     res = db.query('SHOW WARNINGS')
     for i in res:
         return '%s:%s %s' % (i['Level'], i['Code'], i['Message'])
+    return ''
 
 
 def ex(db, *sqls):
     for sql in sqls:
         try:
             db.query(sql)
-        except Exception, e:
-            print e
+        except Exception as exception:
+            print sql
+            traceback.print_exc()
             log_file.write('*' * 50)
             log_file.write('\n')
             log_file.write(sql)
@@ -572,6 +645,7 @@ def ex(db, *sqls):
             log_file.write(show_error_log(db))
             log_file.write('\n')
             log_file.write('\n')
+            raise exception
 
 
 def handle_sql(db, title, *sqls):
@@ -650,37 +724,31 @@ def start():
     handle_sql(db_old, u'关闭外键约束', 'SET FOREIGN_KEY_CHECKS=0;')
     rename_parsers, pipe_parsers = parse_map_config(map_config_path)
     # rename_sqls, pipe_sqls = parse_map_config(map_config_path)
-    rename_sqls = build_map_sqls(rename_parsers)
-    pipe_sqls = build_map_sqls(pipe_parsers)
-    print len(rename_sqls), rename_sqls, len(pipe_sqls), pipe_sqls
-    handle_sql(db_old, u'表或列重命名', *rename_sqls)
+    sql_renames = build_map_sqls(rename_parsers)
+    sql_pipes = build_map_sqls(pipe_parsers)
+    handle_sql(db_old, u'表或列重命名', *sql_renames)
     # 外键约束
-    delete_fks, add_fks = build_foriegn_key_sqls(db_new, db_new_param.name, db_old, db_old_param.name)
+    sql_delete_fks, sql_add_fks = build_foriegn_key_sqls(db_new, db_new_param.name, db_old, db_old_param.name)
     # tables_new = db_new.query('show tables')
     key, tables_new = show_tables(db_new, db_new_param.name, db_new_param.table)
     # 新表
-    create_table_sqls = []
-    alter_table_sqls = []
+    sql_create_tables = []
+    sql_alter_tables = []
     for item in tables_new:
-        print item
         table_name = item[key]
         old_table_name = filter_rename_table(table_name, rename_parsers)
         # 1, 表不存在，需要新建
         if not exists(db_old, old_table_name):
             # 表不存在
-            sqls = []
             sql_create_table = get_table_structure(db_new, table_name)
-            if len(add_fks) > 0 and sql_create_table.find('CONSTRAINT') > 0:
-                add_fks = filter(lambda x: x.find('ALTER TABLE `%s`' % table_name) < 0, add_fks)
-            sqls.append(sql_create_table)
+            if len(sql_add_fks) > 0 and sql_create_table.find('CONSTRAINT') > 0:
+                sql_add_fks = filter(lambda x: x.find('ALTER TABLE `%s`' % table_name) < 0, sql_add_fks)
+            sql_create_tables.append(sql_create_table)
             # 开始导入默认的数据
             if is_copy_data:
                 insert_sql = pipe(db_new, db_old, table_name)
                 if insert_sql is not None:
-                    sqls.append(insert_sql)
-            # TODO 创建表
-            # handle_sql(db_old, table_name, *sqls)
-            create_table_sqls.extend(sqls)
+                    sql_create_tables.append(insert_sql)
             continue
         # 2, 表存在，则判断字段
         fields_new = sorted(list(desc(db_new, table_name)), key=lambda x: x['Field'])
@@ -688,36 +756,39 @@ def start():
         # 过滤重命名设置
         filter_rename_field(old_table_name, fields_old, rename_parsers)
         # 表结构相同
-        print table_name, fields_new.__eq__(fields_old)
         if fields_new.__eq__(fields_old):
             continue
         alter_sql = build_alter_table_sql(fields_new, fields_old)
-        print u'修改表', table_name, alter_sql
         if len(alter_sql) == 0:
             continue
         sql = ('ALTER TABLE %s \n\t' % table_name) + ', \n\t'.join(alter_sql) + ';'
         # sql = compare_fields(table_name, table_name)
         # TODO 修改表
         # handle_sql(db_old, table_name, sql)
-        alter_table_sqls.append(sql)
-    handle_sql(db_old, u'新增表', *create_table_sqls)
-    handle_sql(db_old, u'往新增表中导入旧表中数据', *pipe_sqls)
-    handle_sql(db_old, u'修改', *alter_table_sqls)
-    handle_sql(db_old, 'delete foreign key', *delete_fks)
-    handle_sql(db_old, 'add foreign key', *add_fks)
-    # handle_sql(db_old, u'往新增表中导入旧表中数据', *pipe_sqls)
+        sql_alter_tables.append(sql)
+    handle_sql(db_old, u'新增表', *sql_create_tables)
+    handle_sql(db_old, u'往新增表中导入旧表中数据', *sql_pipes)
+    handle_sql(db_old, u'修改', *sql_alter_tables)
+    handle_sql(db_old, 'delete foreign key', *sql_delete_fks)
+    handle_sql(db_old, 'add foreign key', *sql_add_fks)
     handle_sql(db_old, u'开启外键约束', 'SET FOREIGN_KEY_CHECKS=1;')
 
 
 if __name__ == '__main__':
     if db_new_param.table is not None:
         sql = compare_table_structure(db_new_param.table, db_old_param.table)
-        handle_sql(db_old, db_old_param.table, sql)
+        if not sql:
+            handle_sql(db_old, db_old_param.table, sql)
         exit()
+    transaction = db_old.transaction()
     try:
         start()
-    # except Exception, e:
-    #     print e
+        print u'提交'
+        transaction.commit()
+    except Exception:
+        print u'回滚'
+        transaction.rollback()
+        traceback.print_exc()
     finally:
         diff_file.close()
         log_file.close()
