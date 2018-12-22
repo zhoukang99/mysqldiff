@@ -13,9 +13,9 @@ mysql虽然提供了mysqldiff工具，但实际使用中还有些不满足要求
 *  记录错误日志，出错时方便排查。
 
 ### 2\. 使用方法  
-&emsp;&emsp;**mysqldiff.py**用[web.py](http://webpy.org/ "web.py")作为连接数据库的工具，因此在使用之前要确保环境中已经安装web.py模块，如果没有安装，可以使用下面的命令进行安装：  
+&emsp;&emsp;使用时可以直接下载源码来执行**mysqldiff.py**，或者通过pip命令安装：  
  ```
- pip install web.py
+ pip install mysqldiff.py
  ```
 **命令格式：**  
 ```
