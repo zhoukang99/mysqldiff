@@ -99,6 +99,3 @@ INSERT INTO course (grade, course, user_id, id) VALUES
 SET FOREIGN_KEY_CHECKS=1;
 
 ```
-### 5\. 联系方式 ###  
-微信：  
-![](https://i.imgur.com/1wmotfT.jpg)
